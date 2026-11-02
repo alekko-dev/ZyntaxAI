@@ -8,6 +8,7 @@ import {
   EVENTS,
   ipc,
   on,
+  toFixError,
   type FixError,
   type FixOutcome,
   type Persona,
@@ -16,7 +17,7 @@ import type { DiffSegment } from "@/lib/bindings/DiffSegment";
 
 type State =
   | { status: "working" }
-  | { status: "done"; outcome: FixOutcome }
+  | { status: "done"; outcome: FixOutcome; retrying?: boolean; error?: FixError }
   | { status: "failed"; error: FixError };
 
 const WIDTH = 560;
@@ -28,15 +29,18 @@ export function Overlay() {
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [applied, setApplied] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
+  const requestVersion = useRef(0);
+  const renderedVersion = requestVersion.current;
 
 
   const dismiss = useCallback(() => {
+    requestVersion.current++;
     void ipc.cancelFix();
     void ipc.dismissOverlay();
   }, []);
 
   const apply = useCallback(async () => {
-    if (state.status !== "done" || applied) return;
+    if (state.status !== "done" || state.retrying || applied) return;
     setApplied(true);
     try {
       await ipc.applyFix(state.outcome.corrected, state.outcome.original, "replace");
@@ -51,15 +55,41 @@ export function Overlay() {
   }, [state, applied]);
 
   const copy = useCallback(async () => {
-    if (state.status !== "done") return;
+    if (state.status !== "done" || state.retrying) return;
     await ipc.applyFix(state.outcome.corrected, state.outcome.original, "clipboard");
     dismiss();
   }, [state, dismiss]);
 
   const retry = useCallback(() => {
-    setState({ status: "working" });
-    void ipc.runFix();
-  }, []);
+    if (requestVersion.current !== renderedVersion) return;
+    if (state.status !== "done") {
+      setState({ status: "working" });
+      void ipc.runFix();
+      return;
+    }
+    if (state.retrying) return;
+    const version = ++requestVersion.current;
+    const outcome = state.outcome;
+    setApplied(false);
+    setState({ status: "done", outcome, retrying: true });
+    void ipc.retryFix(outcome.original).then(
+      (next) => {
+        if (requestVersion.current !== version) return;
+        setState({ status: "done", outcome: next ?? outcome });
+      },
+      (error) => {
+        if (requestVersion.current !== version) return;
+        setState({ status: "done", outcome, error: toFixError(error) });
+      },
+    );
+  }, [state, renderedVersion]);
+
+  const showRetryError = useCallback((error: unknown) => {
+    if (requestVersion.current !== renderedVersion) return;
+    setState((current) => current.status === "done"
+      ? { ...current, error: toFixError(error) }
+      : current);
+  }, [renderedVersion]);
 
   useEffect(() => {
     void ipc.getPersonas().then(setPersonas);
@@ -81,6 +111,7 @@ export function Overlay() {
   useEffect(() => {
     const subscriptions = [
       on(EVENTS.fixStarted, () => {
+        requestVersion.current++;
         setApplied(false);
         setState({ status: "working" });
       }),
@@ -88,6 +119,7 @@ export function Overlay() {
       on<FixError>(EVENTS.fixFailed, (error) => setState({ status: "failed", error })),
     ];
     return () => {
+      requestVersion.current++;
       for (const subscription of subscriptions) {
         void subscription.then((off) => off());
       }
@@ -135,12 +167,21 @@ export function Overlay() {
           <span className="text-2xs font-medium tracking-wide text-faint uppercase">ZyntaxAI</span>
 
           {state.status === "done" ? (
-            <PersonaSwitcher personas={personas} onSwitch={retry} />
+            <PersonaSwitcher
+              personas={personas}
+              disabled={state.retrying ?? false}
+              onSwitch={retry}
+              onError={showRetryError}
+            />
           ) : null}
 
           <div className="no-drag ml-auto flex items-center gap-1">
             {state.status !== "working" ? (
-              <Button variant="ghost" size="sm" icon onClick={retry} aria-label="Try again">
+              <Button
+                variant="ghost" size="sm" icon onClick={retry}
+                disabled={state.status === "done" && state.retrying}
+                aria-label="Try again"
+              >
                 <RotateCcw />
               </Button>
             ) : null}
@@ -153,7 +194,14 @@ export function Overlay() {
         {state.status === "working" ? <Working /> : null}
         {state.status === "failed" ? <Failure error={state.error} /> : null}
         {state.status === "done" ? (
-          <Result outcome={state.outcome} applied={applied} onApply={apply} onCopy={copy} />
+          <>
+            {state.retrying ? <Working /> : null}
+            {state.error ? <Failure error={state.error} /> : null}
+            <Result
+              outcome={state.outcome} applied={applied} busy={state.retrying ?? false}
+              onApply={apply} onCopy={copy}
+            />
+          </>
         ) : null}
       </div>
     </div>
@@ -185,11 +233,13 @@ function Failure({ error }: { error: FixError }) {
 function Result({
   outcome,
   applied,
+  busy,
   onApply,
   onCopy,
 }: {
   outcome: FixOutcome;
   applied: boolean;
+  busy: boolean;
   onApply: () => void;
   onCopy: () => void;
 }) {
@@ -225,11 +275,11 @@ function Result({
         ) : null}
 
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={onCopy}>
+          <Button variant="ghost" size="sm" onClick={onCopy} disabled={busy}>
             <Copy />
             Copy
           </Button>
-          <Button variant="primary" size="sm" onClick={onApply} disabled={applied}>
+          <Button variant="primary" size="sm" onClick={onApply} disabled={applied || busy}>
             <Check />
             {applied ? "Applied" : "Apply"}
           </Button>
@@ -273,10 +323,14 @@ function Diff({ segments, showRemoved }: { segments: DiffSegment[]; showRemoved:
 
 function PersonaSwitcher({
   personas,
+  disabled,
   onSwitch,
+  onError,
 }: {
   personas: Persona[];
+  disabled: boolean;
   onSwitch: () => void;
+  onError: (error: unknown) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -292,15 +346,20 @@ function PersonaSwitcher({
         return (
           <button
             key={persona.id}
-            disabled={busy || active}
+            disabled={disabled || busy || active}
             aria-pressed={active}
             onClick={async () => {
               setBusy(true);
-              const settings = await ipc.getSettings();
-              await ipc.saveSettings({ ...settings, personaId: persona.id });
-              setActiveId(persona.id);
-              setBusy(false);
-              onSwitch();
+              try {
+                const settings = await ipc.getSettings();
+                await ipc.saveSettings({ ...settings, personaId: persona.id });
+                setActiveId(persona.id);
+                onSwitch();
+              } catch (error) {
+                onError(error);
+              } finally {
+                setBusy(false);
+              }
             }}
             className={cn(
               "rounded-md px-1.5 py-0.5 text-2xs whitespace-nowrap",

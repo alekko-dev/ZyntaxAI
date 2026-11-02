@@ -1,0 +1,5 @@
+node_modules/
+/apps/desktop/dist/
+/target/
+/src-tauri/gen/
+/src-tauri/bindings/

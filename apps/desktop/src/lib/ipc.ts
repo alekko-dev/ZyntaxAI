@@ -120,6 +120,7 @@ export const ipc = {
 
 
   runFix: () => call<void>("run_fix"),
+  retryFix: (original: string) => call<FixOutcome | null>("retry_fix", { original }),
   cancelFix: () => call<void>("cancel_fix"),
   applyFix: (corrected: string, original: string, mode: OutputMode) =>
     call<void>("apply_fix", { corrected, original, mode }),

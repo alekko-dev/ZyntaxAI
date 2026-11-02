@@ -81,6 +81,7 @@ pub fn run() {
             commands::app_version,
             commands::get_paths,
             commands::run_fix,
+            commands::retry_fix,
             commands::cancel_fix,
             commands::apply_fix,
             commands::dismiss_overlay,

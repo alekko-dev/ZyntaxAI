@@ -422,6 +422,14 @@ pub fn run_fix(app: AppHandle) {
 }
 
 #[tauri::command]
+pub async fn retry_fix(
+    app: AppHandle,
+    original: String,
+) -> CommandResult<Option<zyntax_core::FixOutcome>> {
+    fix::retry_review(&app, original).await
+}
+
+#[tauri::command]
 pub fn cancel_fix(app: AppHandle) {
     fix::cancel(&app);
 }

@@ -89,26 +89,44 @@ impl From<zyntax_core::PromptError> for FixError {
 
 pub fn trigger_from_selection(app: AppHandle) {
     let source = app.state::<AppState>().settings().behavior.input_source;
-    spawn(app, source);
+    spawn(app, FixInput::Capture(source));
 }
 
 pub fn trigger_from_clipboard(app: AppHandle) {
-    spawn(app, InputSource::Clipboard);
+    spawn(app, FixInput::Capture(InputSource::Clipboard));
 }
 
-fn spawn(app: AppHandle, source: InputSource) {
+enum FixInput {
+    Capture(InputSource),
+    Review(String),
+}
+
+pub async fn retry_review(
+    app: &AppHandle,
+    original: String,
+) -> Result<Option<FixOutcome>, FixError> {
+    run(app, FixInput::Review(original)).await
+}
+
+fn spawn(app: AppHandle, input: FixInput) {
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = run(&app, source).await {
-            tracing::warn!(code = %error.code, message = %error.message, "correction failed");
-            let _ = app.emit(events::FIX_FAILED, &error);
-            crate::feedback::notify_failure(&app, &error);
+        match run(&app, input).await {
+            Ok(Some(outcome)) => {
+                let _ = app.emit(events::FIX_COMPLETED, &outcome);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(code = %error.code, message = %error.message, "correction failed");
+                let _ = app.emit(events::FIX_FAILED, &error);
+                crate::feedback::notify_failure(&app, &error);
+            }
         }
     });
 }
 
-async fn run(app: &AppHandle, source: InputSource) -> Result<(), FixError> {
+async fn run(app: &AppHandle, input: FixInput) -> Result<Option<FixOutcome>, FixError> {
     let state = app.state::<AppState>();
-    let settings = state.settings();
+    let mut settings = state.settings();
 
     if !settings.enabled {
         tracing::debug!("hotkey pressed while ZyntaxAI is switched off");
@@ -122,13 +140,21 @@ async fn run(app: &AppHandle, source: InputSource) -> Result<(), FixError> {
 
     let token = state.begin_request();
 
-    let _ = app.emit(events::FIX_STARTED, ());
-
-    let original = capture(app, source).await?;
-
-    if settings.behavior.output_mode == OutputMode::Review {
-        windows::show_overlay_at_cursor(app);
-    }
+    let original = match input {
+        FixInput::Capture(source) => {
+            let _ = app.emit(events::FIX_STARTED, ());
+            let original = capture(app, source).await?;
+            if settings.behavior.output_mode == OutputMode::Review {
+                windows::show_overlay_at_cursor(app);
+            }
+            original
+        }
+        FixInput::Review(original) => {
+            // Retrying the preview must never capture from or type into the focused overlay.
+            settings.behavior.output_mode = OutputMode::Review;
+            original
+        }
+    };
 
     let prompt = PromptSpec {
         persona: &settings.active_persona(),
@@ -161,7 +187,7 @@ async fn run(app: &AppHandle, source: InputSource) -> Result<(), FixError> {
 
     if token.is_cancelled() {
         tracing::debug!("discarding the result of a superseded correction");
-        return Ok(());
+        return Ok(None);
     }
     state.finish_request(&token);
 
@@ -191,8 +217,7 @@ async fn run(app: &AppHandle, source: InputSource) -> Result<(), FixError> {
     record(&state, &settings, &outcome);
     deliver(app, &settings, &outcome).await?;
 
-    let _ = app.emit(events::FIX_COMPLETED, &outcome);
-    Ok(())
+    Ok(Some(outcome))
 }
 
 fn no_display() -> FixError {
