@@ -1,5 +1,19 @@
-import { describe, expect, it, vi, afterEach } from "vitest";
+import { describe, expect, it, vi, afterEach, afterAll } from "vitest";
 import { cost, count, duration, relativeTime, timestamp } from "./format";
+
+// These assertions use English text and separators, regardless of the runner's locale.
+vi.hoisted(() => {
+  const NumberFormat = Intl.NumberFormat;
+  const RelativeTimeFormat = Intl.RelativeTimeFormat;
+  vi.spyOn(Intl, "NumberFormat").mockImplementation(
+    (locales, options) => new NumberFormat(locales ?? "en-US", options),
+  );
+  vi.spyOn(Intl, "RelativeTimeFormat").mockImplementation(
+    (locales, options) => new RelativeTimeFormat(locales ?? "en-US", options),
+  );
+});
+
+afterAll(() => vi.restoreAllMocks());
 
 describe("count", () => {
   it("shows small numbers exactly", () => {

@@ -1,5 +1,7 @@
 name: Release
 
+# Archived outside .github/workflows so GitHub cannot run this release pipeline.
+
 # Builds Windows and macOS, signs them, and attaches one zip per platform to a
 # DRAFT release. A draft is readable only by people with write access and
 # creates no tag, so nothing is public. Nothing goes to an Actions artifact —
