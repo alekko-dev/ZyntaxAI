@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows build and test
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-ci
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test frontend
+        run: pnpm test
+
+      - name: Build frontend and check TypeScript
+        run: pnpm build
+
+      - name: Test Rust workspace
+        run: cargo test --workspace --locked
+
+      - name: Build unsigned Windows installer
+        run: pnpm tauri build --ci --no-sign --bundles nsis --config src-tauri/tauri.ci.conf.json
+
+      - name: Upload unsigned Windows installer
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZyntaxAI-windows-x86_64-unsigned-${{ github.sha }}
+          path: target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14

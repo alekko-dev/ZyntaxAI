@@ -329,6 +329,17 @@ Build through `pnpm tauri`, not `cargo` directly: a plain `cargo build --release
 `custom-protocol` feature, so the binary looks for the dev server instead of its embedded frontend
 and opens a window that never paints.
 
+The **CI** workflow builds and tests Windows on pushes to `main` and pull requests targeting
+`main`. Successful `main` runs upload an unsigned NSIS installer, available under
+**Actions → CI → the run → Artifacts** for 14 days. Pull requests build and test without uploading
+an artifact. These builds need no signing secrets and do not create GitHub releases.
+
+To build the same unsigned installer locally on Windows:
+
+```sh
+pnpm tauri build --ci --no-sign --bundles nsis --config src-tauri/tauri.ci.conf.json
+```
+
 <details>
 <summary><b>AppImage bundling fails on Arch and other rolling distributions</b></summary>
 
@@ -363,15 +374,12 @@ pnpm release --notes "What changed"
 ```
 
 That builds the current platform, collects the installers into `dist/release/<version>/` and writes
-that platform's entry into `dist/release/latest.json`. Windows and macOS are built by the **Release**
-workflow (`Actions → Release → Run workflow`), which signs them with the same key from repository
-secrets and attaches everything to a draft GitHub release. A draft is readable only by people with
-write access to the repository, and creates no tag, so nothing reaches the public even though the
-repository is. The build jobs upload straight to that draft and never to an Actions artifact —
-artifacts on a public repository can be downloaded by anyone.
+that platform's entry into `dist/release/latest.json`. The former **Release** workflow is disabled
+and archived in `.github/workflows-disabled/release.yml`. Signed releases can still be built locally
+with the command above. The CI installers are unsigned test builds, not updater artifacts.
 
-Each platform arrives as one `zyntaxai-<target>.zip` on the draft release. Drop those in `Builds/`,
-then `node scripts/site-sync.mjs Builds/*.zip dist/release` unpacks them and merges everything into
+For signed builds collected locally or packaged as `zyntaxai-<target>.zip` files in `Builds/`,
+`node scripts/site-sync.mjs Builds/*.zip dist/release` unpacks them and merges everything into
 `zyntaxai/` — installers into `releases/<version>/`, every platform entry into one `latest.json`,
 and a fresh `SHA256SUMS`.
 Upload the release files before the manifest, or clients are told about a build that is not there
